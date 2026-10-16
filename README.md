@@ -1,6 +1,6 @@
 # Unit 3 Capstone
 
-## Design
+## Design Choices
 
 ### Choice of Router Function
 Claude was selected as the routing agent rather than a manual keyword-matching approach to improve classification accuracy across a broader range of question types. While this increases token usage per query, an LLM-based router handles edge cases and ambiguous phrasing more reliably. In a real client-facing solution, the relational database and OpenSearch knowledge base would grow significantly over time — adding new clients, projects, policies, and documents — making a static keyword router increasingly fragile and difficult to maintain. A Claude-based router scales naturally with that complexity and follows production multi-agent patterns where diverse, unpredictable input cannot be anticipated in advance.
