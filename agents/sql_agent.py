@@ -64,15 +64,15 @@ def validate_sql(query: str) -> dict:
     return {"valid": True, "reason": "Read-only SQL query is valid.", "sql": sql}
 
 #--------Generate SQL Query invoking Claude----------------
-def generate_sql(question: str) -> str:
+def generate_sql(question: str) -> tuple[str, dict]:
     prompt = (
         f"{SCHEMA_CONTEXT}\n\n"
         f"Generate a SQL query to answer: {question}\n\n"
         "Return ONLY the SQL query. No explanation, no markdown, no backticks."
     )
     result = invoke_claude(prompt, max_tokens=512)
-    sql = result["text"].strip()
-    return sql.removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
+    sql = result["text"].strip().removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
+    return sql, {"input": result["input_tokens"], "output": result["output_tokens"]}
 
 #-------------------Execute Query only if passed through Validation Layer------------------------
 def execute_query_safely(sql: str) -> dict:
@@ -97,7 +97,7 @@ def execute_query_safely(sql: str) -> dict:
 
 #-----------Full Compile of SQL Agent for Running--------
 def run_sql_agent(question: str) -> dict:
-    sql = generate_sql(question)
+    sql, gen_tokens = generate_sql(question)
     result = execute_query_safely(sql)
 
     if not result["success"]:
@@ -105,7 +105,7 @@ def run_sql_agent(question: str) -> dict:
             "success": False,
             "answer": f"Query blocked or failed: {result['error']}",
             "sources": [f"SQL: {sql}"],
-            "metadata": {"validation": result["validation"], "token_usage": {"input": 0, "output": 0}},
+            "metadata": {"validation": result["validation"], "token_usage": gen_tokens},
         }
 
     prompt = (
@@ -121,7 +121,10 @@ def run_sql_agent(question: str) -> dict:
         "sources": [f"SQL: {sql}"],
         "metadata": {
             "validation": result["validation"],
-            "token_usage": {"input": interpretation["input_tokens"], "output": interpretation["output_tokens"]},
+            "token_usage": { # accounts for both generation and interpretation tokens
+                "input": gen_tokens["input"] + interpretation["input_tokens"],
+                "output": gen_tokens["output"] + interpretation["output_tokens"],
+            },
         },
     }
 

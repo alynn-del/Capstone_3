@@ -27,7 +27,8 @@ def run_traced_query(orchestrator, question: str) -> dict:
 
     result = orchestrator.invoke({
         "question": question, "route": None, "sql_result": None,
-        "retrieval_result": None, "final_answer": None, "token_usage": None
+        "retrieval_result": None, "final_answer": None, "token_usage": None,
+        "routing_token_usage": None,
     })
 
     log_decision("query_complete", question, {
@@ -45,17 +46,19 @@ def run_traced_query(orchestrator, question: str) -> dict:
 COST_PER_1K_INPUT = 0.003
 COST_PER_1K_OUTPUT = 0.015
 
-def calculate_full_query_cost(sql_tokens: dict, retrieval_tokens: dict, synthesis_tokens: dict) -> dict:
+def calculate_full_query_cost(sql_tokens: dict, retrieval_tokens: dict, synthesis_tokens: dict, routing_tokens: dict = None) -> dict:
     def cost(tokens):
         return (tokens.get("input_tokens", tokens.get("input", 0)) / 1000 * COST_PER_1K_INPUT +
                 tokens.get("output_tokens", tokens.get("output", 0)) / 1000 * COST_PER_1K_OUTPUT)
 
+    routing_cost = cost(routing_tokens) if routing_tokens else 0
     sql_cost = cost(sql_tokens) if sql_tokens else 0
     retrieval_cost = cost(retrieval_tokens) if retrieval_tokens else 0
     synthesis_cost = cost(synthesis_tokens) if synthesis_tokens else 0
-    total = sql_cost + retrieval_cost + synthesis_cost
+    total = routing_cost + sql_cost + retrieval_cost + synthesis_cost
 
     return {
+        "routing_cost": round(routing_cost, 6),
         "sql_agent_cost": round(sql_cost, 6),
         "retrieval_agent_cost": round(retrieval_cost, 6),
         "synthesis_cost": round(synthesis_cost, 6),

@@ -23,8 +23,8 @@ def get_opensearch_client():
         connection_class=RequestsHttpConnection,
     )
 
-#-----------Retrieving Top K (default 5) semantic similarity embedded chunks from OpenSearch------
-def retrieve(question: str, top_k: int = 5) -> list[dict]:
+#-----------Retrieving Top K (default 3) semantic similarity embedded chunks from OpenSearch------
+def retrieve(question: str, top_k: int = 3) -> list[dict]:
     query_vector = get_embedding(question)
     client = get_opensearch_client()
     response = client.search(

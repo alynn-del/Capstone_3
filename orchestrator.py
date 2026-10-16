@@ -19,6 +19,7 @@ class OrchestratorState(TypedDict):
     retrieval_result: Optional[dict]
     final_answer: Optional[str]
     token_usage: Optional[dict]
+    routing_token_usage: Optional[dict]
 
 #----Defining Shared Tool Registry--------
 TOOL_REGISTRY = {
@@ -98,7 +99,11 @@ def route_question(state: OrchestratorState) -> OrchestratorState:
     else:
         route = "retrieval"
 
-    return {**state, "route": route}
+    return {
+        **state,
+        "route": route,
+        "routing_token_usage": {"input": result["input_tokens"], "output": result["output_tokens"]},
+    }
 
 #----------Adding Logging to Routing Section (fix for circular importing)--------------
 def route_question_logged(state: OrchestratorState) -> OrchestratorState:
@@ -173,34 +178,87 @@ def build_orchestrator():
     return graph.compile()
 
 
-#---------------Question Test Cases (STEP 7)-----------
+#---------------Validation Status Helper------------------
+def get_validation_statuses(result: OrchestratorState) -> dict:
+    sql_status = None
+    if result.get("sql_result"):
+        sql_status = result["sql_result"].get("metadata", {}).get("validation", "UNKNOWN")
+
+    retrieval_status = None
+    if result.get("retrieval_result"):
+        has_sources = bool(result["retrieval_result"].get("sources"))
+        retrieval_status = "PASSED" if has_sources else "NO SOURCES"
+
+    return {"sql": sql_status, "retrieval": retrieval_status}
+
+
+#---------------Question Test Cases (STEP 6/7)-----------
 if __name__ == "__main__":
     orchestrator = build_orchestrator()   
     test_questions = [
-        "Which consultant has the highest total billable hours?",                                                                            # RDS only (1)
-        "What is the total budget across all active projects?",                                                                              # RDS only (2)
-        "What is the company's policy on remote work?",                                                                                      # documents only (3)
-        "How does the performance review process work?",                                                                                     # documents only (4)
-        "How many active projects do we have, and what is the project delivery methodology described in our documentation?",                 # both (5)
-        "Who are our top clients by contract value, and what does our client onboarding process say about contract setup?",                  # both (6)
-        "Delete all invoices that are overdue.",                                                                                             # unsafe SQL (7)
-        "What is the weather forecast for next week?",                                                                                       # unanswerable (8)
+        # "Which consultant has the highest total billable hours?",                                                                            # RDS only (1)
+        # "What is the total budget across all active projects?",                                                                              # RDS only (2)
+        # "What is the company's policy on remote work?",                                                                                      # documents only (3)
+        "What were key points in the Q2 Client Report for 2026?",                                                                                     # documents only (4)
+        # "How many active projects do we have, and what is the project delivery methodology described in our documentation?",                 # both (5)
+        # "Who are our top clients by contract value, and what does our client onboarding process say about contract setup?",                  # both (6)
+        # "Delete all invoices that are overdue.",                                                                                             # unsafe SQL (7)
+        # "What is the weather forecast for next week?",                                                                                       # unanswerable (8)
+        # "How many active projects do we have?",                                                                                              # RDS only (9)
+        # "What is our onboarding process?",                                                                                                   # documents only (10)
     ]
+
+    cost_rows = []
 
     for q in test_questions:
         print(f"\n{'='*60}\nQ: {q}")
-        # result = orchestrator.invoke({
-        #     "question": q, "route": None, "sql_result": None,
-        #     "retrieval_result": None, "final_answer": None, "token_usage": None
-        # })
         result = tokenomics_logger.run_traced_query(orchestrator, q)
-        
+
         breakdown = tokenomics_logger.calculate_full_query_cost(
+            routing_tokens=result.get("routing_token_usage"),
             sql_tokens=result.get("sql_result", {}).get("metadata", {}).get("token_usage") if result.get("sql_result") else None,
             retrieval_tokens=result.get("retrieval_result", {}).get("metadata", {}).get("token_usage") if result.get("retrieval_result") else None,
             synthesis_tokens=result.get("token_usage"),
         )
-        print(f"Route: {result['route']}")
+        validation = get_validation_statuses(result)
+        print(f"Route:              {result['route']}")
+        print(f"SQL validation:     {validation['sql'] or 'N/A'}")
+        print(f"Retrieval status:   {validation['retrieval'] or 'N/A'}")
         print(f"Answer: {result['final_answer']}")
         print(f"Tokens: {result['token_usage']}")
         print(f"Cost:   {breakdown}")
+
+        cost_rows.append({
+            "question": q[:55] + "..." if len(q) > 55 else q,
+            "route": result["route"],
+            **breakdown,
+        })
+
+    # --- 10-query cost summary table ---
+    components = ["routing_cost", "sql_agent_cost", "retrieval_agent_cost", "synthesis_cost"]
+    totals = {c: sum(r[c] for r in cost_rows) for c in components}
+    grand_total = sum(r["total_cost"] for r in cost_rows)
+    top_component = max(totals, key=totals.get)
+
+    col_w = 57
+    print(f"\n{'='*60}")
+    print("10-QUERY COST SUMMARY")
+    print(f"{'='*60}")
+    print(f"{'Question':<{col_w}} {'Route':<10} {'Routing':>9} {'SQL':>9} {'Retrieval':>10} {'Synthesis':>10} {'Total':>9}")
+    print(f"{'-'*col_w} {'-'*10} {'-'*9} {'-'*9} {'-'*10} {'-'*10} {'-'*9}")
+    for r in cost_rows:
+        print(
+            f"{r['question']:<{col_w}} {r['route']:<10} "
+            f"${r['routing_cost']:>8.6f} ${r['sql_agent_cost']:>8.6f} "
+            f"${r['retrieval_agent_cost']:>9.6f} ${r['synthesis_cost']:>9.6f} "
+            f"${r['total_cost']:>8.6f}"
+        )
+    print(f"{'-'*col_w} {'-'*10} {'-'*9} {'-'*9} {'-'*10} {'-'*10} {'-'*9}")
+    print(
+        f"{'TOTAL':<{col_w}} {'':<10} "
+        f"${totals['routing_cost']:>8.6f} ${totals['sql_agent_cost']:>8.6f} "
+        f"${totals['retrieval_agent_cost']:>9.6f} ${totals['synthesis_cost']:>9.6f} "
+        f"${grand_total:>8.6f}"
+    )
+    print(f"\nGrand total (10 queries): ${grand_total:.6f}  |  ${grand_total * 1000:.2f} per 1,000 queries")
+    print(f"Highest-cost component:   {top_component.replace('_', ' ')} (${totals[top_component]:.6f})")

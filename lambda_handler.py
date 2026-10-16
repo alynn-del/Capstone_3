@@ -2,7 +2,7 @@
 lambda_handler.py -- wraps the orchestrator in the format Lambda expects.
 """
 import json
-from orchestrator import build_orchestrator
+from orchestrator import build_orchestrator, get_validation_statuses
 from tokenomics_logger import run_traced_query, calculate_full_query_cost
 
 orchestrator = build_orchestrator()
@@ -16,13 +16,15 @@ def handler(event, context):
         if not question:
             return {"statusCode": 400, "body": json.dumps({"error": "question is required"})}
 
+        # Running Logged Queries
         result = run_traced_query(orchestrator, question)
 
-        sql_validation = None
-        if result.get("sql_result"):
-            sql_validation = result["sql_result"].get("metadata", {}).get("validation")
+        # Grabbing validation statuses
+        validation = get_validation_statuses(result)
 
+        # Calculating cost breakdown
         cost_breakdown = calculate_full_query_cost(
+            routing_tokens=result.get("routing_token_usage"),
             sql_tokens=result.get("sql_result", {}).get("metadata", {}).get("token_usage") if result.get("sql_result") else None,
             retrieval_tokens=result.get("retrieval_result", {}).get("metadata", {}).get("token_usage") if result.get("retrieval_result") else None,
             synthesis_tokens=result.get("token_usage"),
@@ -33,7 +35,8 @@ def handler(event, context):
             "body": json.dumps({
                 "answer": result["final_answer"],
                 "route": result["route"],
-                "sql_validation": sql_validation,
+                "sql_validation": validation["sql"],
+                "retrieval_validation": validation["retrieval"],
                 "token_usage": result.get("token_usage", {}),
                 "cost": cost_breakdown,
             })
