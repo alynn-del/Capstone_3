@@ -1,11 +1,5 @@
 """
 bedrock_client.py -- shared helper for calling Claude via Bedrock.
-
-Every lab and lesson this week that calls Claude reuses this exact module.
-This calls Claude via Bedrock, not the direct Anthropic SDK -- students in
-this environment don't have direct Anthropic API keys, so the
-inference-profile ARN pattern below is the only path to Claude Sonnet 4.6
-available here.
 """
 import boto3
 import json

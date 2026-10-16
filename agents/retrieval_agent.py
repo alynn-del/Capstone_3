@@ -1,12 +1,6 @@
 """
 agents/retrieval_agent.py -- validated retrieval agent, wrapped to the
-standard {success, answer, sources, metadata} interface from the Shared
-Tool Registry lab.
-
-Uses onnx_embed.get_embedding() instead of sentence-transformers directly --
-see onnx_embed.py's docstring for why (PyTorch's size alone exceeds Lambda's
-package limit) and for the verification that confirms this produces
-numerically equivalent vectors to the original sentence-transformers model.
+standard {success, answer, sources, metadata} interface using onnx embeddings.
 """
 import os
 import boto3
@@ -17,7 +11,7 @@ from bedrock_client import invoke_claude
 
 REGION = "us-east-1"
 
-
+#-------------Define OpenSearch Credentials------------------
 def get_opensearch_client():
     host = os.environ["OPENSEARCH_ENDPOINT"]
     credentials = boto3.Session().get_credentials()
@@ -29,7 +23,7 @@ def get_opensearch_client():
         connection_class=RequestsHttpConnection,
     )
 
-
+#-----------Retrieving Top K (default 5) semantic similarity embedded chunks from OpenSearch------
 def retrieve(question: str, top_k: int = 5) -> list[dict]:
     query_vector = get_embedding(question)
     client = get_opensearch_client()
@@ -42,19 +36,20 @@ def retrieve(question: str, top_k: int = 5) -> list[dict]:
         for hit in response["hits"]["hits"]
     ]
 
-
+#----------Generating NL Answer from context from OpenSearch using Claude------------
 def generate_cited_answer(question: str, chunks: list[dict]) -> tuple[str, dict]:
     context = "\n\n".join([f"[Source {i+1}: {c['source']}]\n{c['content']}" for i, c in enumerate(chunks)])
     prompt = (
         "Answer the question using ONLY the context provided below. "
         "If the answer is not in the context, say 'I cannot find this information in the provided documents.' "
-        "Always cite the source number(s) you used.\n\n"
+        "Always cite the source number(s) you used. "
+        "Respond in plain text only. Do not use markdown, bullet points, headers, or bold formatting.\n\n"
         f"CONTEXT:\n{context}\n\nQUESTION: {question}\n\nANSWER:"
     )
     result = invoke_claude(prompt, max_tokens=500)
     return result["text"], {"input": result["input_tokens"], "output": result["output_tokens"]}
 
-
+#----------Double Checking Contextual Grounding of Answer using Sources---------
 def check_grounding(answer: str, chunks: list[dict]) -> bool:
     import re
     cited_sources = re.findall(r"Source (\d+)", answer)
@@ -62,7 +57,7 @@ def check_grounding(answer: str, chunks: list[dict]) -> bool:
         return "cannot find" in answer.lower()
     return all(1 <= int(s) <= len(chunks) for s in cited_sources)
 
-
+#-----------Full Compile of Retrieval Agent for Running-----------
 def run_retrieval_agent(question: str) -> dict:
     chunks = retrieve(question)
     if not chunks:

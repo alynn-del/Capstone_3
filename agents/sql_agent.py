@@ -1,18 +1,9 @@
 """
 agents/sql_agent.py -- validated SQL Query Agent, wrapped to the standard
-{success, answer, sources, metadata} interface from the Shared Tool Registry
-lab.
-
-NOTE ON STRUCTURE: earlier in this program, run_sql_agent() reached into a
-sibling repo via sys.path.append("../add-validation-layer-lab") to import
-validated_sql_agent. That works for local development, where both repos'
-directories physically exist side by side -- it does NOT work in a deployed
-Lambda package, which only has access to what's actually bundled inside the
-zip. Every piece of logic (generate_sql, validate_sql, execute_query_safely)
-is inlined directly here instead, so this file is genuinely self-contained
-and deployable on its own.
+{success, answer, sources, metadata} interface.
 """
 import os
+import re
 import psycopg2
 from dotenv import load_dotenv
 from bedrock_client import invoke_claude
@@ -29,7 +20,7 @@ All monetary values are in USD. Dates are in ISO 8601 format.
 status in projects is one of: 'active', 'completed', 'on-hold'.
 """
 
-#----------Validating SQL query before calling database-------------
+#---------------Helpers for Validate SQL--------------------------
 BLOCKED = ["CREATE", "DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "TRUNCATE",
            "REINDEX", "RENAME", "MERGE", "GRANT", "REVOKE", "COMMIT", "ROLLBACK",
            "INTO", "EXEC", "EXECUTE", "CALL", "COPY"]
@@ -45,7 +36,9 @@ FENCE = re.compile(r"^```(?:sql)?\s*|\s*```$", re.IGNORECASE)
 # replaces actual db values with "" for scanning purposes to avoid catching them as SQl commands
 def _mask(match: re.Match) -> str:
     return "''" if match.group(0).startswith("'") else " "
+#--------------------------------------------------------------------
 
+#----------Validating SQL query before calling database-------------
 def validate_sql(query: str) -> dict:
     sql = FENCE.sub("", (query or "").strip()).strip()
     if not sql:
@@ -70,7 +63,7 @@ def validate_sql(query: str) -> dict:
 
     return {"valid": True, "reason": "Read-only SQL query is valid.", "sql": sql}
 
-
+#--------Generate SQL Query invoking Claude----------------
 def generate_sql(question: str) -> str:
     prompt = (
         f"{SCHEMA_CONTEXT}\n\n"
@@ -81,7 +74,7 @@ def generate_sql(question: str) -> str:
     sql = result["text"].strip()
     return sql.removeprefix("```sql").removeprefix("```").removesuffix("```").strip()
 
-
+#-------------------Execute Query only if passed through Validation Layer------------------------
 def execute_query_safely(sql: str) -> dict:
     validation = validate_sql(sql)
     if not validation["valid"]:
@@ -102,39 +95,77 @@ def execute_query_safely(sql: str) -> dict:
     except Exception as e:
         return {"success": False, "error": str(e), "validation": "EXECUTION_ERROR", "sql": sql}
 
-
-def validated_sql_agent(question: str) -> dict:
+#-----------Full Compile of SQL Agent for Running--------
+def run_sql_agent(question: str) -> dict:
     sql = generate_sql(question)
     result = execute_query_safely(sql)
 
     if not result["success"]:
         return {
+            "success": False,
             "answer": f"Query blocked or failed: {result['error']}",
-            "sql": sql,
-            "validation": result["validation"],
-            "token_usage": {"input": 0, "output": 0},
+            "sources": [f"SQL: {sql}"],
+            "metadata": {"validation": result["validation"], "token_usage": {"input": 0, "output": 0}},
         }
 
     prompt = (
         f"Question: {question}\nColumns: {result['columns']}\n"
-        f"Data: {result['rows'][:20]}\n\nAnswer concisely."
+        f"Data: {result['rows'][:20]}\n\n"
+        "Answer concisely in plain text. Do not use markdown, bullet points, headers, or bold formatting."
     )
     interpretation = invoke_claude(prompt, max_tokens=500)
 
     return {
-        "answer": interpretation["text"],
-        "sql": sql,
-        "validation": result["validation"],
-        "token_usage": {"input": interpretation["input_tokens"], "output": interpretation["output_tokens"]},
-    }
-
-
-def run_sql_agent(question: str) -> dict:
-    """Standardized wrapper matching the Shared Tool Registry lab's interface."""
-    result = validated_sql_agent(question)
-    return {
         "success": result["validation"] == "PASSED",
-        "answer": result["answer"],
-        "sources": [f"SQL: {result['sql']}"],
-        "metadata": {"validation": result["validation"], "token_usage": result["token_usage"]},
+        "answer": interpretation["text"],
+        "sources": [f"SQL: {sql}"],
+        "metadata": {
+            "validation": result["validation"],
+            "token_usage": {"input": interpretation["input_tokens"], "output": interpretation["output_tokens"]},
+        },
     }
+
+
+# --------------- Validator Test Cases (STEP 5)---------------
+if __name__ == "__main__":
+    tests = [
+        # (description, sql, expect_valid)
+        (
+            "Case 1 — valid SELECT",
+            "SELECT name, contract_value FROM clients WHERE region = 'EMEA'",
+            True,
+        ),
+        (
+            "Case 2 — destructive DELETE blocked by keyword check",
+            "DELETE FROM invoices WHERE status = 'unpaid'",
+            False,
+        ),
+        (
+            "Case 3 — column name containing blocked word allowed (whole-word match)",
+            "SELECT id, deleted_at FROM clients WHERE deleted_at IS NOT NULL",
+            True,
+        ),
+        (
+            "Case 4 — stacked query with blocked keyword",
+            "SELECT * FROM clients; DROP TABLE clients",
+            False,
+        ),
+        (
+            "Case 5 — stacked query with no blocked keyword (proves stacking check is independent)",
+            "SELECT * FROM clients; SELECT * FROM projects",
+            False,
+        ),
+    ]
+
+    print("\n--- validate_sql test cases ---")
+    all_passed = True
+    for desc, sql, expect_valid in tests:
+        result = validate_sql(sql)
+        passed = result["valid"] == expect_valid
+        status = "PASS" if passed else "FAIL"
+        if not passed:
+            all_passed = False
+        print(f"[{status}] {desc}")
+        if not passed:
+            print(f"       expected valid={expect_valid}, got valid={result['valid']}, reason={result.get('reason')}")
+    print(f"\n{'All tests passed.' if all_passed else 'Some tests FAILED.'}")

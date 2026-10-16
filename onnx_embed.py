@@ -1,37 +1,5 @@
 """
 onnx_embed.py -- embeddings via ONNX Runtime, replacing sentence-transformers.
-
-WHY THIS EXISTS: sentence-transformers depends on PyTorch, whose core
-runtime library alone (libtorch_cpu.so, ~418MB) already exceeds Lambda's
-250MB unzipped package limit before adding anything else. This module
-reimplements the same all-MiniLM-L6-v2 embedding pipeline using onnxruntime
-(a few MB) and tokenizers (~12MB) instead -- roughly 90MB total including
-the model file, comfortably within budget.
-
-CORRECTNESS -- this was not assumed, it was verified: the mean-pooling and
-L2-normalization logic below was checked against a real sentence-transformers
-install on a separate machine with adequate disk space, comparing this
-module's output against SentenceTransformer("all-MiniLM-L6-v2").encode() for
-multiple test sentences. Cosine similarity: >0.9999999. Max absolute
-difference per element: ~1.6e-7 (floating-point noise between ONNX Runtime
-and PyTorch, not a real discrepancy). This must produce numerically
-equivalent vectors to whatever originally populated your OpenSearch index --
-a subtly different implementation wouldn't error, it would just silently
-return worse or wrong retrieval results.
-
-The first version of this module did NOT normalize, matching the assumption
-that encode()'s default normalize_embeddings=False meant no normalization
-happened anywhere. That assumption was wrong: cosine similarity was already
-~1.0 (correct direction) but magnitude was off by exactly the amount an
-unnormalized vector differs from its unit-length form. This model's own
-module pipeline bakes in L2 normalization as part of its forward pass,
-independent of the encode() flag. The fix (below) is the version that
-actually passed verification.
-
-REQUIRED FILES (not included in this .py, download separately -- see README):
-  - model.onnx     (~87MB,  from huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/onnx/model.onnx)
-  - tokenizer.json (~456KB, from huggingface.co/sentence-transformers/all-MiniLM-L6-v2/resolve/main/tokenizer.json)
-Both must sit in the same directory as this file.
 """
 import os
 import numpy as np

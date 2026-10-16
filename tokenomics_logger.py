@@ -6,9 +6,8 @@ bedrock_client.py stays separate from every agent that calls it.
 import json
 import uuid
 from datetime import datetime
-from orchestrator import route_question
 
-
+#--------Logging the Initial Route Decision-----------
 def log_decision(stage: str, question: str, details: dict):
     entry = {
         "timestamp": datetime.now().isoformat(),
@@ -20,13 +19,7 @@ def log_decision(stage: str, question: str, details: dict):
     with open("/tmp/agent_decisions.jsonl", "a") as f:
         f.write(json.dumps(entry) + "\n")
 
-
-def route_question_logged(state):
-    result = route_question(state)
-    log_decision("routing", state["question"], {"route": result["route"]})
-    return result
-
-
+#--------Running Traced Query Func to be used in Lambda Handler Implementation-----------
 def run_traced_query(orchestrator, question: str) -> dict:
     trace_id = str(uuid.uuid4())[:8]
 
@@ -37,12 +30,6 @@ def run_traced_query(orchestrator, question: str) -> dict:
         "retrieval_result": None, "final_answer": None, "token_usage": None
     })
 
-    # NOTE: sql_result's "validation" field is nested under "metadata", not
-    # top-level -- run_sql_agent() returns {success, answer, sources,
-    # metadata: {validation, token_usage}}. Accessing result["sql_result"]
-    # ["validation"] directly silently returns None even on a query that
-    # actually passed. This was a real, confirmed bug in an earlier version
-    # of this file -- verified directly against the actual return shape.
     log_decision("query_complete", question, {
         "trace_id": trace_id,
         "route": result["route"],
@@ -52,3 +39,26 @@ def run_traced_query(orchestrator, question: str) -> dict:
     })
 
     return result
+
+
+#---------------Calculating Cost----------
+COST_PER_1K_INPUT = 0.003
+COST_PER_1K_OUTPUT = 0.015
+
+def calculate_full_query_cost(sql_tokens: dict, retrieval_tokens: dict, synthesis_tokens: dict) -> dict:
+    def cost(tokens):
+        return (tokens.get("input_tokens", tokens.get("input", 0)) / 1000 * COST_PER_1K_INPUT +
+                tokens.get("output_tokens", tokens.get("output", 0)) / 1000 * COST_PER_1K_OUTPUT)
+
+    sql_cost = cost(sql_tokens) if sql_tokens else 0
+    retrieval_cost = cost(retrieval_tokens) if retrieval_tokens else 0
+    synthesis_cost = cost(synthesis_tokens) if synthesis_tokens else 0
+    total = sql_cost + retrieval_cost + synthesis_cost
+
+    return {
+        "sql_agent_cost": round(sql_cost, 6),
+        "retrieval_agent_cost": round(retrieval_cost, 6),
+        "synthesis_cost": round(synthesis_cost, 6),
+        "total_cost": round(total, 6),
+        "cost_per_1000_queries": round(total * 1000, 2)
+    }
